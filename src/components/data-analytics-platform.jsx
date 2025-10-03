@@ -67,83 +67,169 @@ const DataAnalyticsPlatform = () => {
     composed: { icon: Layers, name: 'Composed Chart' }
   };
 
-  // Advanced file processing with progress
+  // Fixed file upload handler with better error handling
   const handleFileUpload = (file) => {
     if (!file) return;
+    
+    // Check file type
+    const allowedTypes = ['.csv', '.xlsx', '.xls'];
+    const fileExtension = file.name.toLowerCase().substr(file.name.lastIndexOf('.'));
+    
+    if (!allowedTypes.includes(fileExtension)) {
+      alert('Please upload only CSV or Excel files (.csv, .xlsx, .xls)');
+      return;
+    }
     
     setIsLoading(true);
     
     Papa.parse(file, {
       complete: (result) => {
-        if (result.data && result.data.length > 0) {
-          const headers = result.data[0];
-          const dataRows = result.data.slice(1).filter(row => row.some(cell => cell.trim() !== ''));
-          
-          const parsedData = dataRows.map((row, index) => {
-            const obj = { id: index + 1, _originalIndex: index };
-            headers.forEach((header, i) => {
-              let value = row[i];
-              // Enhanced parsing logic
-              if (value && !isNaN(value) && value.trim() !== '') {
-                value = parseFloat(value);
-              } else if (value && (value.toLowerCase() === 'true' || value.toLowerCase() === 'false')) {
-                value = value.toLowerCase() === 'true';
-              }
-              obj[header] = value;
+        try {
+          if (result.data && result.data.length > 0) {
+            const headers = result.data[0].filter(h => h && h.trim() !== '');
+            
+            // Better filtering of empty rows with null checks
+            const dataRows = result.data.slice(1).filter(row => {
+              if (!row || row.length === 0) return false;
+              return row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
             });
-            return obj;
-          });
+            
+            if (dataRows.length === 0) {
+              alert('No data found in the file. Please check your CSV file.');
+              setIsLoading(false);
+              return;
+            }
+            
+            const parsedData = dataRows.map((row, index) => {
+              const obj = { 
+                id: index + 1, 
+                _originalIndex: index,
+                _rowKey: `row_${index + 1}` // Unique identifier for charts
+              };
+              
+              headers.forEach((header, i) => {
+                let value = row[i];
+                
+                // Handle null/undefined values
+                if (value === null || value === undefined) {
+                  obj[header] = null;
+                  return;
+                }
+                
+                // Convert to string for processing
+                const strValue = String(value).trim();
+                
+                // Enhanced parsing logic
+                if (strValue === '') {
+                  obj[header] = null;
+                } else if (!isNaN(strValue) && strValue !== '' && !isNaN(parseFloat(strValue))) {
+                  obj[header] = parseFloat(strValue);
+                } else if (strValue.toLowerCase() === 'true' || strValue.toLowerCase() === 'false') {
+                  obj[header] = strValue.toLowerCase() === 'true';
+                } else {
+                  obj[header] = strValue;
+                }
+              });
+              return obj;
+            });
 
-          setCsvData(parsedData);
-          setOriginalData(parsedData);
-          setFilteredData(parsedData);
-          setColumns(headers);
-          setSelectedColumns(headers.slice(0, 3)); // Auto-select first 3 columns
-          performAdvancedAnalysis(parsedData, headers);
+            console.log('Parsed Data Sample:', parsedData.slice(0, 3));
+            console.log('Headers:', headers);
+
+            setCsvData(parsedData);
+            setOriginalData(parsedData);
+            setFilteredData(parsedData);
+            setColumns(headers);
+            
+            // Perform analysis first to get numeric columns
+            const tempAnalysis = performQuickAnalysis(parsedData, headers);
+            const numericCols = tempAnalysis.numericColumns;
+            
+            // Auto-select numeric columns for charts (up to 4)
+            setSelectedColumns(numericCols.slice(0, 4));
+            
+            // Now perform full analysis
+            performAdvancedAnalysis(parsedData, headers);
+          } else {
+            alert('Invalid file format or empty file. Please upload a valid CSV file.');
+          }
+        } catch (error) {
+          console.error('Error processing file:', error);
+          alert('Error processing file. Please check the file format and try again.');
         }
+        setIsLoading(false);
+      },
+      error: (error) => {
+        console.error('Papa Parse error:', error);
+        alert('Error reading file. Please ensure it\'s a valid CSV file.');
         setIsLoading(false);
       },
       header: false,
       skipEmptyLines: true,
-      dynamicTyping: true
+      dynamicTyping: false // Disabled to handle manually
     });
+  };
+
+  // Quick analysis for immediate column detection
+  const performQuickAnalysis = (data, headers) => {
+    const numericColumns = headers.filter(col => {
+      if (!col) return false;
+      return data.some(row => {
+        const value = row[col];
+        return typeof value === 'number' && !isNaN(value) && value !== null;
+      });
+    });
+    
+    return { numericColumns };
   };
 
   // Enhanced analysis with more insights
   const performAdvancedAnalysis = (data, headers) => {
-    const numericColumns = headers.filter(col => 
-      data.some(row => typeof row[col] === 'number' && !isNaN(row[col]))
-    );
+    if (!data || data.length === 0) return;
+    
+    const numericColumns = headers.filter(col => {
+      if (!col) return false;
+      return data.some(row => {
+        const value = row[col];
+        return typeof value === 'number' && !isNaN(value) && value !== null;
+      });
+    });
+    
+    console.log('Numeric Columns:', numericColumns);
     
     const categoricalColumns = headers.filter(col => 
-      !numericColumns.includes(col) && col !== 'id' && col !== '_originalIndex'
+      col && !numericColumns.includes(col) && col !== 'id' && col !== '_originalIndex' && col !== '_rowKey'
     );
 
-    const booleanColumns = headers.filter(col =>
-      data.some(row => typeof row[col] === 'boolean')
-    );
+    const booleanColumns = headers.filter(col => {
+      if (!col) return false;
+      return data.some(row => typeof row[col] === 'boolean');
+    });
 
     const stats = {};
     const distributions = {};
     
     numericColumns.forEach(col => {
-      const values = data.map(row => row[col]).filter(val => !isNaN(val) && val !== null);
+      const values = data.map(row => row[col]).filter(val => 
+        val !== null && val !== undefined && !isNaN(val) && typeof val === 'number'
+      );
+      
       if (values.length > 0) {
-        const sorted = values.sort((a, b) => a - b);
+        const sorted = [...values].sort((a, b) => a - b);
         const mean = values.reduce((a, b) => a + b, 0) / values.length;
         const variance = values.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / values.length;
         
         stats[col] = {
           mean: mean,
-          median: sorted[Math.floor(sorted.length / 2)],
+          median: sorted[Math.floor(sorted.length / 2)] || 0,
           mode: findMode(values),
           min: Math.min(...values),
           max: Math.max(...values),
           std: Math.sqrt(variance),
           variance: variance,
           range: Math.max(...values) - Math.min(...values),
-          q1: sorted[Math.floor(sorted.length * 0.25)],
-          q3: sorted[Math.floor(sorted.length * 0.75)],
+          q1: sorted[Math.floor(sorted.length * 0.25)] || 0,
+          q3: sorted[Math.floor(sorted.length * 0.75)] || 0,
           skewness: calculateSkewness(values, mean, Math.sqrt(variance)),
           kurtosis: calculateKurtosis(values, mean, Math.sqrt(variance))
         };
@@ -156,9 +242,15 @@ const DataAnalyticsPlatform = () => {
     // Category analysis
     const categoryStats = {};
     categoricalColumns.forEach(col => {
-      const values = data.map(row => row[col]).filter(val => val !== null && val !== undefined);
+      if (!col) return;
+      const values = data.map(row => row[col]).filter(val => 
+        val !== null && val !== undefined && String(val).trim() !== ''
+      );
       const counts = {};
-      values.forEach(val => counts[val] = (counts[val] || 0) + 1);
+      values.forEach(val => {
+        const strVal = String(val);
+        counts[strVal] = (counts[strVal] || 0) + 1;
+      });
       categoryStats[col] = {
         unique: Object.keys(counts).length,
         mostCommon: Object.entries(counts).sort(([,a], [,b]) => b - a).slice(0, 5),
@@ -186,28 +278,36 @@ const DataAnalyticsPlatform = () => {
     setInsights(generatedInsights);
   };
 
-  // Utility functions
+  // Utility functions with better error handling
   const findMode = (values) => {
+    if (!values || values.length === 0) return 0;
     const counts = {};
     values.forEach(val => counts[val] = (counts[val] || 0) + 1);
-    return Object.entries(counts).reduce((a, b) => counts[a[0]] > counts[b[0]] ? a : b)[0];
+    const entries = Object.entries(counts);
+    if (entries.length === 0) return 0;
+    return parseFloat(entries.reduce((a, b) => counts[a[0]] > counts[b[0]] ? a : b)[0]);
   };
 
   const calculateSkewness = (values, mean, std) => {
+    if (!values || values.length === 0 || std === 0) return 0;
     const n = values.length;
     const skew = values.reduce((sum, val) => sum + Math.pow((val - mean) / std, 3), 0) / n;
-    return skew;
+    return isNaN(skew) ? 0 : skew;
   };
 
   const calculateKurtosis = (values, mean, std) => {
+    if (!values || values.length === 0 || std === 0) return 0;
     const n = values.length;
     const kurt = values.reduce((sum, val) => sum + Math.pow((val - mean) / std, 4), 0) / n - 3;
-    return kurt;
+    return isNaN(kurt) ? 0 : kurt;
   };
 
   const createDistribution = (values, bins = 10) => {
+    if (!values || values.length === 0) return [];
     const min = Math.min(...values);
     const max = Math.max(...values);
+    if (min === max) return [{ bin: `${min}`, count: values.length, percentage: '100.0' }];
+    
     const binWidth = (max - min) / bins;
     const distribution = Array(bins).fill(0);
     
@@ -229,8 +329,12 @@ const DataAnalyticsPlatform = () => {
       correlations[col1] = {};
       numericCols.forEach(col2 => {
         if (col1 !== col2) {
-          const values1 = data.map(row => row[col1]).filter(val => !isNaN(val));
-          const values2 = data.map(row => row[col2]).filter(val => !isNaN(val));
+          const values1 = data.map(row => row[col1]).filter(val => 
+            val !== null && val !== undefined && !isNaN(val)
+          );
+          const values2 = data.map(row => row[col2]).filter(val => 
+            val !== null && val !== undefined && !isNaN(val)
+          );
           correlations[col1][col2] = calculatePearsonCorrelation(values1, values2);
         }
       });
@@ -257,22 +361,27 @@ const DataAnalyticsPlatform = () => {
   const detectAdvancedOutliers = (data, numericCols) => {
     const outliers = {};
     numericCols.forEach(col => {
-      const values = data.map(row => row[col]).filter(val => !isNaN(val));
-      const sorted = values.sort((a, b) => a - b);
-      const q1 = sorted[Math.floor(sorted.length * 0.25)];
-      const q3 = sorted[Math.floor(sorted.length * 0.75)];
+      const values = data.map(row => row[col]).filter(val => 
+        val !== null && val !== undefined && !isNaN(val)
+      );
+      if (values.length === 0) return;
+      
+      const sorted = [...values].sort((a, b) => a - b);
+      const q1 = sorted[Math.floor(sorted.length * 0.25)] || 0;
+      const q3 = sorted[Math.floor(sorted.length * 0.75)] || 0;
       const iqr = q3 - q1;
       const lowerBound = q1 - 1.5 * iqr;
       const upperBound = q3 + 1.5 * iqr;
       
-      const outlierRows = data.filter(row => 
-        row[col] < lowerBound || row[col] > upperBound
-      );
+      const outlierRows = data.filter(row => {
+        const val = row[col];
+        return val !== null && val !== undefined && !isNaN(val) && (val < lowerBound || val > upperBound);
+      });
       
       outliers[col] = {
         count: outlierRows.length,
         percentage: ((outlierRows.length / data.length) * 100).toFixed(1),
-        values: outlierRows.map(row => row[col]).slice(0, 10) // Show first 10
+        values: outlierRows.map(row => row[col]).slice(0, 10)
       };
     });
     return outliers;
@@ -286,13 +395,18 @@ const DataAnalyticsPlatform = () => {
     };
     
     headers.forEach(col => {
+      if (!col) return;
       const values = data.map(row => row[col]);
-      const nonNull = values.filter(val => val !== null && val !== undefined && val !== '');
+      const nonNull = values.filter(val => 
+        val !== null && val !== undefined && String(val).trim() !== ''
+      );
       quality.completeness[col] = ((nonNull.length / values.length) * 100).toFixed(1);
     });
     
-    const avgCompleteness = Object.values(quality.completeness)
-      .reduce((sum, val) => sum + parseFloat(val), 0) / headers.length;
+    const completenessValues = Object.values(quality.completeness).map(val => parseFloat(val));
+    const avgCompleteness = completenessValues.length > 0 
+      ? completenessValues.reduce((sum, val) => sum + val, 0) / completenessValues.length 
+      : 0;
     
     quality.overall = avgCompleteness.toFixed(1);
     return quality;
@@ -301,13 +415,15 @@ const DataAnalyticsPlatform = () => {
   const detectTrends = (data, numericCols) => {
     const trends = {};
     numericCols.forEach(col => {
-      const values = data.map(row => row[col]).filter(val => !isNaN(val));
+      const values = data.map(row => row[col]).filter(val => 
+        val !== null && val !== undefined && !isNaN(val)
+      );
       if (values.length > 2) {
         const firstHalf = values.slice(0, Math.floor(values.length / 2));
         const secondHalf = values.slice(Math.floor(values.length / 2));
         const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
         const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
-        const change = ((secondAvg - firstAvg) / firstAvg * 100);
+        const change = firstAvg !== 0 ? ((secondAvg - firstAvg) / firstAvg * 100) : 0;
         
         trends[col] = {
           direction: change > 5 ? 'increasing' : change < -5 ? 'decreasing' : 'stable',
@@ -334,15 +450,15 @@ const DataAnalyticsPlatform = () => {
     // Data quality insights
     numericCols.forEach(col => {
       const stat = stats[col];
-      if (stat) {
-        const cv = (stat.std / stat.mean) * 100; // Coefficient of variation
+      if (stat && stat.mean !== undefined && !isNaN(stat.mean)) {
+        const cv = stat.std !== 0 ? (stat.std / Math.abs(stat.mean)) * 100 : 0;
         let insight = '';
         let type = 'trend';
         
         if (cv > 100) {
           insight = `${col} shows high variability (CV: ${cv.toFixed(1)}%) - consider investigating extreme values.`;
           type = 'warning';
-        } else if (stat.skewness > 1 || stat.skewness < -1) {
+        } else if (Math.abs(stat.skewness) > 1) {
           insight = `${col} distribution is highly skewed (${stat.skewness > 0 ? 'right' : 'left'}-skewed: ${stat.skewness.toFixed(2)}).`;
           type = 'info';
         } else {
@@ -359,50 +475,38 @@ const DataAnalyticsPlatform = () => {
       }
     });
 
-    // Correlation insights
-    if (analysis && Object.keys(analysis.correlations).length > 0) {
-      Object.entries(analysis.correlations).forEach(([col1, correlations]) => {
-        Object.entries(correlations).forEach(([col2, corr]) => {
-          if (Math.abs(corr) > 0.7) {
-            insights.push({
-              type: corr > 0 ? 'trend' : 'warning',
-              title: 'Strong Correlation Detected',
-              description: `${col1} and ${col2} show ${corr > 0 ? 'positive' : 'negative'} correlation (${corr.toFixed(3)}).`,
-              icon: Sparkles,
-              priority: 'high'
-            });
-          }
-        });
-      });
-    }
-
     return insights.sort((a, b) => {
       const priorityOrder = { high: 3, medium: 2, low: 1 };
       return priorityOrder[b.priority] - priorityOrder[a.priority];
     });
   };
 
-  // Data filtering and sorting
+  // Data filtering and sorting with better error handling
   useEffect(() => {
+    if (!originalData || originalData.length === 0) return;
+    
     let filtered = [...originalData];
     
     // Apply search filter
-    if (searchTerm) {
+    if (searchTerm && searchTerm.trim() !== '') {
       filtered = filtered.filter(row =>
-        Object.values(row).some(val =>
-          val && val.toString().toLowerCase().includes(searchTerm.toLowerCase())
-        )
+        Object.values(row).some(val => {
+          if (val === null || val === undefined) return false;
+          return String(val).toLowerCase().includes(searchTerm.toLowerCase());
+        })
       );
     }
     
     // Apply column-specific filter
-    if (filterValue && sortColumn) {
+    if (filterValue && filterValue.trim() !== '' && sortColumn) {
       filtered = filtered.filter(row => {
         const value = row[sortColumn];
+        if (value === null || value === undefined) return false;
+        
         if (typeof value === 'number') {
           return value >= parseFloat(filterValue) || isNaN(parseFloat(filterValue));
         }
-        return value && value.toString().toLowerCase().includes(filterValue.toLowerCase());
+        return String(value).toLowerCase().includes(filterValue.toLowerCase());
       });
     }
     
@@ -412,12 +516,17 @@ const DataAnalyticsPlatform = () => {
         const aVal = a[sortColumn];
         const bVal = b[sortColumn];
         
+        // Handle null/undefined values
+        if ((aVal === null || aVal === undefined) && (bVal === null || bVal === undefined)) return 0;
+        if (aVal === null || aVal === undefined) return 1;
+        if (bVal === null || bVal === undefined) return -1;
+        
         if (typeof aVal === 'number' && typeof bVal === 'number') {
           return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
         }
         
-        const aStr = aVal ? aVal.toString() : '';
-        const bStr = bVal ? bVal.toString() : '';
+        const aStr = String(aVal);
+        const bStr = String(bVal);
         return sortDirection === 'asc' 
           ? aStr.localeCompare(bStr)
           : bStr.localeCompare(aStr);
@@ -478,9 +587,9 @@ const DataAnalyticsPlatform = () => {
   const InsightCard = ({ insight }) => {
     const Icon = insight.icon || Brain;
     const priorityColors = {
-      high: 'border-red-500 bg-red-50',
-      medium: 'border-yellow-500 bg-yellow-50', 
-      low: 'border-green-500 bg-green-50'
+      high: 'border-red-500 bg-red-50/10',
+      medium: 'border-yellow-500 bg-yellow-50/10', 
+      low: 'border-green-500 bg-green-50/10'
     };
     
     return (
@@ -494,9 +603,9 @@ const DataAnalyticsPlatform = () => {
             <p className="text-white/80 text-sm leading-relaxed">{insight.description}</p>
             <div className="mt-3">
               <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                insight.priority === 'high' ? 'bg-red-100 text-red-800' :
-                insight.priority === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                'bg-green-100 text-green-800'
+                insight.priority === 'high' ? 'bg-red-100/20 text-red-300' :
+                insight.priority === 'medium' ? 'bg-yellow-100/20 text-yellow-300' :
+                'bg-green-100/20 text-green-300'
               }`}>
                 {insight.priority.toUpperCase()} PRIORITY
               </span>
@@ -507,14 +616,38 @@ const DataAnalyticsPlatform = () => {
     );
   };
 
-  // Enhanced chart rendering with better axis labels
+  // Enhanced chart rendering with better axis labels and data handling
   const renderEnhancedCharts = () => {
     if (!analysis || !csvData.length) return null;
 
     const { numericColumns } = analysis;
-    const data = csvData.slice(0, 100); // Limit for performance
+    
+    if (numericColumns.length === 0) {
+      return (
+        <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8 text-center`}>
+          <h3 className="text-2xl font-bold text-white mb-4">No Numeric Data Available</h3>
+          <p className="text-white/70">Your dataset doesn't contain numeric columns suitable for visualization.</p>
+        </div>
+      );
+    }
+
+    // Use filtered data but limit for performance
+    const chartData = csvData.slice(0, 100);
+    
+    // Ensure we have valid selected columns
+    const validSelectedColumns = selectedColumns.filter(col => 
+      numericColumns.includes(col) && 
+      chartData.some(row => typeof row[col] === 'number' && !isNaN(row[col]))
+    );
+    
+    // If no valid columns selected, use first numeric column
+    const columnsToShow = validSelectedColumns.length > 0 ? validSelectedColumns : numericColumns.slice(0, 1);
+    
+    console.log('Chart Data Sample:', chartData.slice(0, 3));
+    console.log('Columns to Show:', columnsToShow);
     
     const getAxisLabel = (column) => {
+      if (!column) return 'Values';
       // Create more descriptive axis labels
       const words = column.split(/[_\s]+/);
       const formatted = words.map(word => 
@@ -522,14 +655,19 @@ const DataAnalyticsPlatform = () => {
       ).join(' ');
       
       // Add units or context based on common patterns
-      if (column.toLowerCase().includes('price') || column.toLowerCase().includes('cost')) {
+      const lowerCol = column.toLowerCase();
+      if (lowerCol.includes('price') || lowerCol.includes('cost') || lowerCol.includes('amount')) {
         return `${formatted} ($)`;
-      } else if (column.toLowerCase().includes('percent') || column.toLowerCase().includes('rate')) {
+      } else if (lowerCol.includes('percent') || lowerCol.includes('rate') || lowerCol.includes('%')) {
         return `${formatted} (%)`;
-      } else if (column.toLowerCase().includes('count') || column.toLowerCase().includes('number')) {
+      } else if (lowerCol.includes('count') || lowerCol.includes('number') || lowerCol.includes('qty')) {
         return `${formatted} (Count)`;
-      } else if (column.toLowerCase().includes('time') || column.toLowerCase().includes('duration')) {
+      } else if (lowerCol.includes('time') || lowerCol.includes('duration') || lowerCol.includes('hour')) {
         return `${formatted} (Time)`;
+      } else if (lowerCol.includes('weight') || lowerCol.includes('mass')) {
+        return `${formatted} (kg)`;
+      } else if (lowerCol.includes('height') || lowerCol.includes('length') || lowerCol.includes('distance')) {
+        return `${formatted} (m)`;
       }
       
       return formatted;
@@ -539,10 +677,12 @@ const DataAnalyticsPlatform = () => {
       if (active && payload && payload.length) {
         return (
           <div className="bg-gray-900/95 backdrop-blur-lg border border-white/20 rounded-lg p-4 shadow-2xl">
-            <p className="text-white font-semibold mb-2">{`Data Point: ${label}`}</p>
+            <p className="text-white font-semibold mb-2">{`Record: ${label}`}</p>
             {payload.map((entry, index) => (
               <p key={index} className="text-sm" style={{ color: entry.color }}>
-                <span className="font-medium">{getAxisLabel(entry.dataKey)}:</span> {entry.value}
+                <span className="font-medium">{getAxisLabel(entry.dataKey)}:</span> {
+                  typeof entry.value === 'number' ? entry.value.toLocaleString() : entry.value
+                }
               </p>
             ))}
           </div>
@@ -554,211 +694,259 @@ const DataAnalyticsPlatform = () => {
     return (
       <div className="space-y-8">
         {/* Enhanced Line Chart */}
-        {numericColumns.length > 0 && (
-          <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold text-white flex items-center">
-                <TrendingUp className="h-6 w-6 mr-3 text-blue-400" />
-                Temporal Trend Analysis
-              </h3>
-              <div className="flex items-center space-x-2">
-                <select 
-                  className="bg-gray-800/50 text-white rounded-lg px-3 py-1 border border-white/20"
-                  value={chartType}
-                  onChange={(e) => setChartType(e.target.value)}
-                >
-                  {Object.entries(chartConfigs).map(([key, config]) => (
-                    <option key={key} value={key}>{config.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <ResponsiveContainer width="100%" height={500}>
-              <LineChart data={data} margin={{ top: 20, right: 30, left: 40, bottom: 60 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                <XAxis 
-                  dataKey="id" 
-                  stroke="rgba(255,255,255,0.7)"
-                  style={{ fontSize: '12px' }}
-                  label={{ value: 'Record Index', position: 'insideBottom', offset: -20, style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
-                />
-                <YAxis 
-                  stroke="rgba(255,255,255,0.7)"
-                  style={{ fontSize: '12px' }}
-                  label={{ value: getAxisLabel(numericColumns[0]) || 'Values', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
-                />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend 
-                  wrapperStyle={{ paddingTop: '20px' }}
-                  iconType="line"
-                />
-                {selectedColumns.filter(col => numericColumns.includes(col)).slice(0, 4).map((col, index) => (
-                  <Line 
-                    key={col} 
-                    type="monotone" 
-                    dataKey={col} 
-                    stroke={currentTheme.primary[index]} 
-                    strokeWidth={3}
-                    dot={{ r: 4, strokeWidth: 2 }}
-                    activeDot={{ r: 6, strokeWidth: 2 }}
-                    name={getAxisLabel(col)}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {/* Enhanced Bar Chart with better labeling */}
-        {numericColumns.length > 0 && (
-          <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
-            <h3 className="text-2xl font-bold text-white mb-6 flex items-center">
-              <BarChart3 className="h-6 w-6 mr-3 text-green-400" />
-              Comparative Value Analysis
+        <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-2xl font-bold text-white flex items-center">
+              <TrendingUp className="h-6 w-6 mr-3 text-blue-400" />
+              Temporal Trend Analysis
             </h3>
-            <ResponsiveContainer width="100%" height={500}>
-              <BarChart data={data.slice(0, 25)} margin={{ top: 20, right: 30, left: 40, bottom: 80 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                <XAxis 
-                  dataKey="id" 
-                  stroke="rgba(255,255,255,0.7)"
-                  angle={-45}
-                  textAnchor="end"
-                  height={80}
-                  label={{ value: 'Record ID', position: 'insideBottom', offset: -60, style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
-                />
-                <YAxis 
-                  stroke="rgba(255,255,255,0.7)"
-                  label={{ value: 'Values', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
-                />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend />
-                {selectedColumns.filter(col => numericColumns.includes(col)).slice(0, 3).map((col, index) => (
-                  <Bar 
-                    key={col} 
-                    dataKey={col} 
-                    fill={currentTheme.primary[index]}
-                    name={getAxisLabel(col)}
-                    radius={[4, 4, 0, 0]}
-                  />
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
+            <div className="text-white/60 text-sm">
+              Showing {chartData.length} records
+            </div>
           </div>
-        )}
+          <ResponsiveContainer width="100%" height={500}>
+            <LineChart data={chartData} margin={{ top: 20, right: 30, left: 60, bottom: 80 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+              <XAxis 
+                dataKey="id" 
+                stroke="rgba(255,255,255,0.7)"
+                style={{ fontSize: '12px' }}
+                label={{ 
+                  value: 'Record Index', 
+                  position: 'insideBottom', 
+                  offset: -20, 
+                  style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                }}
+              />
+              <YAxis 
+                stroke="rgba(255,255,255,0.7)"
+                style={{ fontSize: '12px' }}
+                label={{ 
+                  value: columnsToShow.length === 1 ? getAxisLabel(columnsToShow[0]) : 'Values', 
+                  angle: -90, 
+                  position: 'insideLeft', 
+                  style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend 
+                wrapperStyle={{ paddingTop: '20px', color: 'white' }}
+                iconType="line"
+              />
+              {columnsToShow.slice(0, 4).map((col, index) => (
+                <Line 
+                  key={col} 
+                  type="monotone" 
+                  dataKey={col} 
+                  stroke={currentTheme.primary[index % currentTheme.primary.length]} 
+                  strokeWidth={3}
+                  dot={{ r: 3, strokeWidth: 2 }}
+                  activeDot={{ r: 5, strokeWidth: 2 }}
+                  name={getAxisLabel(col)}
+                  connectNulls={false}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Enhanced Bar Chart */}
+        <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
+          <h3 className="text-2xl font-bold text-white mb-6 flex items-center">
+            <BarChart3 className="h-6 w-6 mr-3 text-green-400" />
+            Comparative Value Analysis
+          </h3>
+          <ResponsiveContainer width="100%" height={500}>
+            <BarChart data={chartData.slice(0, 25)} margin={{ top: 20, right: 30, left: 60, bottom: 80 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+              <XAxis 
+                dataKey="id" 
+                stroke="rgba(255,255,255,0.7)"
+                angle={-45}
+                textAnchor="end"
+                height={80}
+                style={{ fontSize: '11px' }}
+                label={{ 
+                  value: 'Record ID', 
+                  position: 'insideBottom', 
+                  offset: -60, 
+                  style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                }}
+              />
+              <YAxis 
+                stroke="rgba(255,255,255,0.7)"
+                style={{ fontSize: '12px' }}
+                label={{ 
+                  value: 'Values', 
+                  angle: -90, 
+                  position: 'insideLeft', 
+                  style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend wrapperStyle={{ color: 'white' }} />
+              {columnsToShow.slice(0, 3).map((col, index) => (
+                <Bar 
+                  key={col} 
+                  dataKey={col} 
+                  fill={currentTheme.primary[index % currentTheme.primary.length]}
+                  name={getAxisLabel(col)}
+                  radius={[4, 4, 0, 0]}
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
 
         {/* Enhanced Scatter Plot */}
-        {numericColumns.length >= 2 && (
+        {columnsToShow.length >= 2 && (
           <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
             <h3 className="text-2xl font-bold text-white mb-6 flex items-center">
               <Sparkles className="h-6 w-6 mr-3 text-pink-400" />
-              Correlation Matrix Visualization
+              Correlation Analysis
             </h3>
             <ResponsiveContainer width="100%" height={500}>
-              <ScatterChart data={data} margin={{ top: 20, right: 30, left: 40, bottom: 60 }}>
+              <ScatterChart data={chartData} margin={{ top: 20, right: 30, left: 60, bottom: 80 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
                 <XAxis 
-                  dataKey={numericColumns[0]} 
+                  type="number"
+                  dataKey={columnsToShow[0]} 
                   stroke="rgba(255,255,255,0.7)"
-                  label={{ value: getAxisLabel(numericColumns[0]), position: 'insideBottom', offset: -20, style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
+                  style={{ fontSize: '12px' }}
+                  label={{ 
+                    value: getAxisLabel(columnsToShow[0]), 
+                    position: 'insideBottom', 
+                    offset: -20, 
+                    style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                  }}
                 />
                 <YAxis 
-                  dataKey={numericColumns[1]} 
+                  type="number"
+                  dataKey={columnsToShow[1]} 
                   stroke="rgba(255,255,255,0.7)"
-                  label={{ value: getAxisLabel(numericColumns[1]), angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
+                  style={{ fontSize: '12px' }}
+                  label={{ 
+                    value: getAxisLabel(columnsToShow[1]), 
+                    angle: -90, 
+                    position: 'insideLeft', 
+                    style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                  }}
                 />
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CustomTooltip />} />
                 <Scatter 
-                  dataKey={numericColumns[1]} 
+                  dataKey={columnsToShow[1]} 
                   fill={currentTheme.primary[0]}
                   strokeWidth={2}
-                  stroke="#fff"
+                  stroke="rgba(255,255,255,0.3)"
                 />
               </ScatterChart>
             </ResponsiveContainer>
           </div>
         )}
 
+        {/* Enhanced Area Chart */}
+        <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
+          <h3 className="text-2xl font-bold text-white mb-6 flex items-center">
+            <Activity className="h-6 w-6 mr-3 text-purple-400" />
+            Distribution Analysis
+          </h3>
+          <ResponsiveContainer width="100%" height={500}>
+            <AreaChart data={chartData.slice(0, 50)} margin={{ top: 20, right: 30, left: 60, bottom: 80 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+              <XAxis 
+                dataKey="id" 
+                stroke="rgba(255,255,255,0.7)"
+                style={{ fontSize: '12px' }}
+                label={{ 
+                  value: 'Record Index', 
+                  position: 'insideBottom', 
+                  offset: -20, 
+                  style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                }}
+              />
+              <YAxis 
+                stroke="rgba(255,255,255,0.7)"
+                style={{ fontSize: '12px' }}
+                label={{ 
+                  value: 'Values', 
+                  angle: -90, 
+                  position: 'insideLeft', 
+                  style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend wrapperStyle={{ color: 'white' }} />
+              {columnsToShow.slice(0, 2).map((col, index) => (
+                <Area 
+                  key={col} 
+                  type="monotone" 
+                  dataKey={col} 
+                  stackId="1"
+                  stroke={currentTheme.primary[index % currentTheme.primary.length]} 
+                  fill={currentTheme.primary[index % currentTheme.primary.length]}
+                  fillOpacity={0.6}
+                  name={getAxisLabel(col)}
+                />
+              ))}
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
         {/* New: Composed Chart */}
-        {numericColumns.length >= 2 && (
+        {columnsToShow.length >= 2 && (
           <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
             <h3 className="text-2xl font-bold text-white mb-6 flex items-center">
-              <Layers className="h-6 w-6 mr-3 text-purple-400" />
+              <Layers className="h-6 w-6 mr-3 text-orange-400" />
               Multi-Dimensional Analysis
             </h3>
             <ResponsiveContainer width="100%" height={500}>
-              <ComposedChart data={data.slice(0, 30)} margin={{ top: 20, right: 30, left: 40, bottom: 60 }}>
+              <ComposedChart data={chartData.slice(0, 30)} margin={{ top: 20, right: 30, left: 60, bottom: 80 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
                 <XAxis 
                   dataKey="id" 
                   stroke="rgba(255,255,255,0.7)"
-                  label={{ value: 'Record Index', position: 'insideBottom', offset: -20, style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
+                  style={{ fontSize: '12px' }}
+                  label={{ 
+                    value: 'Record Index', 
+                    position: 'insideBottom', 
+                    offset: -20, 
+                    style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                  }}
                 />
                 <YAxis 
                   stroke="rgba(255,255,255,0.7)"
-                  label={{ value: 'Values', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } }}
+                  style={{ fontSize: '12px' }}
+                  label={{ 
+                    value: 'Values', 
+                    angle: -90, 
+                    position: 'insideLeft', 
+                    style: { textAnchor: 'middle', fill: 'rgba(255,255,255,0.8)' } 
+                  }}
                 />
                 <Tooltip content={<CustomTooltip />} />
-                <Legend />
+                <Legend wrapperStyle={{ color: 'white' }} />
                 <Area 
-                  dataKey={numericColumns[0]} 
+                  dataKey={columnsToShow[0]} 
                   fill={currentTheme.primary[0]}
                   stroke={currentTheme.primary[0]}
                   fillOpacity={0.3}
-                  name={getAxisLabel(numericColumns[0])}
+                  name={getAxisLabel(columnsToShow[0])}
                 />
                 <Bar 
-                  dataKey={numericColumns[1]} 
+                  dataKey={columnsToShow[1]} 
                   fill={currentTheme.primary[1]}
-                  name={getAxisLabel(numericColumns[1])}
+                  name={getAxisLabel(columnsToShow[1])}
                 />
-                <Line 
-                  type="monotone" 
-                  dataKey={numericColumns.length > 2 ? numericColumns[2] : numericColumns[0]} 
-                  stroke={currentTheme.primary[2]}
-                  strokeWidth={3}
-                  name={getAxisLabel(numericColumns.length > 2 ? numericColumns[2] : numericColumns[0])}
-                />
+                {columnsToShow.length > 2 && (
+                  <Line 
+                    type="monotone" 
+                    dataKey={columnsToShow[2]} 
+                    stroke={currentTheme.primary[2]}
+                    strokeWidth={3}
+                    name={getAxisLabel(columnsToShow[2])}
+                  />
+                )}
               </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {/* New: Radar Chart for multi-dimensional comparison */}
-        {numericColumns.length >= 3 && (
-          <div className={`${currentTheme.cardBg} rounded-xl shadow-2xl p-8`}>
-            <h3 className="text-2xl font-bold text-white mb-6 flex items-center">
-              <Target className="h-6 w-6 mr-3 text-orange-400" />
-              Multi-Dimensional Profile
-            </h3>
-            <ResponsiveContainer width="100%" height={500}>
-              <RadarChart data={data.slice(0, 1).map(item => {
-                const normalized = {};
-                numericColumns.slice(0, 6).forEach(col => {
-                  const max = Math.max(...csvData.map(row => row[col] || 0));
-                  const min = Math.min(...csvData.map(row => row[col] || 0));
-                  normalized[getAxisLabel(col)] = ((item[col] - min) / (max - min)) * 100;
-                });
-                return normalized;
-              })}>
-                <PolarGrid gridType="polygon" stroke="rgba(255,255,255,0.2)" />
-                <PolarAngleAxis 
-                  dataKey="subject" 
-                  tick={{ fill: 'rgba(255,255,255,0.8)', fontSize: 12 }}
-                />
-                <PolarRadiusAxis 
-                  angle={90} 
-                  domain={[0, 100]}
-                  tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 10 }}
-                />
-                <Radar
-                  dataKey="value"
-                  stroke={currentTheme.primary[0]}
-                  fill={currentTheme.primary[0]}
-                  fillOpacity={0.3}
-                  strokeWidth={2}
-                />
-              </RadarChart>
             </ResponsiveContainer>
           </div>
         )}
@@ -838,13 +1026,13 @@ const DataAnalyticsPlatform = () => {
                   <Zap className="h-8 w-8 text-yellow-400 animate-pulse" />
                 </div>
               </div>
-              <h3 className="text-2xl font-bold text-white mb-4">Drop Your Data & Watch the Magic</h3>
+              <h3 className="text-2xl font-bold text-white mb-4">Drop Your CSV/Excel File & Watch the Magic</h3>
               <p className="text-white/70 mb-6 text-lg">
-                Advanced AI analysis • Real-time insights • Beautiful visualizations
+                Support for .csv, .xlsx, .xls • AI analysis • Beautiful visualizations
               </p>
               <input
                 type="file"
-                accept=".csv"
+                accept=".csv,.xlsx,.xls"
                 onChange={(e) => handleFileUpload(e.target.files[0])}
                 className="hidden"
                 id="file-upload"
@@ -1066,7 +1254,7 @@ const DataAnalyticsPlatform = () => {
                           <tr key={index} className="hover:bg-white/5 transition-colors">
                             {columns.slice(0, 8).map((col) => (
                               <td key={col} className="px-6 py-4 text-sm text-white/90">
-                                {typeof row[col] === 'number' ? row[col].toLocaleString() : row[col]}
+                                {typeof row[col] === 'number' ? row[col].toLocaleString() : String(row[col] || '')}
                               </td>
                             ))}
                           </tr>
@@ -1192,7 +1380,7 @@ const DataAnalyticsPlatform = () => {
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       {Object.entries(analysis.dataQuality.completeness).map(([col, percentage]) => (
                         <div key={col} className="bg-white/5 rounded-xl p-4 border border-white/10">
-                          <h4 className="text-white font-semibold mb-2">{col}</h4>
+                          <h4 className="text-white font-semibold mb-2 truncate">{col}</h4>
                           <div className="w-full bg-gray-600/50 rounded-full h-2 mb-2">
                             <div 
                               className={`h-2 rounded-full ${
@@ -1216,54 +1404,59 @@ const DataAnalyticsPlatform = () => {
             {activeTab === 'charts' && (
               <div>
                 {/* Column Selection for Charts */}
-                <div className={`${currentTheme.cardBg} rounded-2xl shadow-2xl p-6 mb-8`}>
-                  <h3 className="text-xl font-bold text-white mb-4 flex items-center">
-                    <Settings className="h-5 w-5 mr-2 text-cyan-400" />
-                    Visualization Controls
-                  </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-white/80 text-sm font-medium mb-2">Select Columns to Visualize:</label>
-                      <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto">
-                        {columns.filter(col => analysis?.numericColumns.includes(col)).map(col => (
-                          <label key={col} className="flex items-center space-x-2 text-white/80">
-                            <input
-                              type="checkbox"
-                              checked={selectedColumns.includes(col)}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedColumns([...selectedColumns, col]);
-                                } else {
-                                  setSelectedColumns(selectedColumns.filter(c => c !== col));
-                                }
-                              }}
-                              className="rounded border-white/20 bg-white/10"
-                            />
-                            <span className="text-sm">{col}</span>
-                          </label>
-                        ))}
+                {analysis && analysis.numericColumns.length > 0 && (
+                  <div className={`${currentTheme.cardBg} rounded-2xl shadow-2xl p-6 mb-8`}>
+                    <h3 className="text-xl font-bold text-white mb-4 flex items-center">
+                      <Settings className="h-5 w-5 mr-2 text-cyan-400" />
+                      Visualization Controls
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div>
+                        <label className="block text-white/80 text-sm font-medium mb-2">Select Columns to Visualize:</label>
+                        <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+                          {analysis.numericColumns.map(col => (
+                            <label key={col} className="flex items-center space-x-2 text-white/80">
+                              <input
+                                type="checkbox"
+                                checked={selectedColumns.includes(col)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedColumns([...selectedColumns, col]);
+                                  } else {
+                                    setSelectedColumns(selectedColumns.filter(c => c !== col));
+                                  }
+                                }}
+                                className="rounded border-white/20 bg-white/10"
+                              />
+                              <span className="text-sm truncate">{col}</span>
+                            </label>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                    <div>
-                      <label className="block text-white/80 text-sm font-medium mb-2">Data Range:</label>
-                      <p className="text-white/60 text-sm">
-                        Displaying {Math.min(csvData.length, 100)} of {csvData.length} records
-                      </p>
-                      <div className="mt-2">
-                        <button
-                          onClick={() => {
-                            setFilteredData(originalData);
-                            setCsvData(originalData);
-                          }}
-                          className="flex items-center px-4 py-2 bg-cyan-500/20 text-cyan-400 rounded-lg hover:bg-cyan-500/30 transition-colors"
-                        >
-                          <RefreshCw className="h-4 w-4 mr-2" />
-                          Reset Filters
-                        </button>
+                      <div>
+                        <label className="block text-white/80 text-sm font-medium mb-2">Data Range:</label>
+                        <p className="text-white/60 text-sm">
+                          Displaying {Math.min(csvData.length, 100)} of {csvData.length} records
+                        </p>
+                        <div className="mt-2">
+                          <button
+                            onClick={() => {
+                              setFilteredData(originalData);
+                              setCsvData(originalData);
+                              setSearchTerm('');
+                              setFilterValue('');
+                              setSortColumn('');
+                            }}
+                            className="flex items-center px-4 py-2 bg-cyan-500/20 text-cyan-400 rounded-lg hover:bg-cyan-500/30 transition-colors"
+                          >
+                            <RefreshCw className="h-4 w-4 mr-2" />
+                            Reset Filters
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                )}
                 
                 {renderEnhancedCharts()}
               </div>
